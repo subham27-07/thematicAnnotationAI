@@ -1,0 +1,19 @@
+code,support_gold,human_human_kappa,f1
+Death wish,10,0.7115,0.7142857142857143
+Threats of violence,21,0.6977,0.7200000000000001
+No offensive content,18,0.6389,0.7692307692307692
+One-off offensive,6,0.6196,0.6666666666666666
+Expressed uncertainty,4,0.4473,0.75
+Consequences beyond suspencion,3,0.4354,0.5
+Consistent offensive behavior,13,0.3919,0.7333333333333334
+Hate speech and offensive language,46,0.3664,0.8395061728395062
+Contextual understanding,3,0.3261,0.0
+Calm and thoughtful,6,0.3188,0.8
+positive content,3,0.3188,0.5
+Mix of offensive and non-offensive,3,0.249,0.3333333333333333
+Majority offesnive,3,0.2466,0.4444444444444444
+Normal behavior,6,0.2266,0.5
+Not too offensive,5,0.1863,0.8333333333333333
+Extreme offensive,3,0.1598,0.30769230769230765
+derogatory remarks,3,0.039,0.13333333333333333
+one message is enough (offensive),4,0.0,0.46153846153846156

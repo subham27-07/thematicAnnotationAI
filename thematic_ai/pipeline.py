@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 
 import pandas as pd
 
+from .calibration import NeighbourRetriever, compute_coding_stats
 from .codebook import Codebook, load_codebook
 from .config import RunConfig
 from .data import (
@@ -92,19 +94,49 @@ def load_workspace(
 def make_system_prompt(workspace: Workspace, config: RunConfig | None = None) -> str:
     """Build the system prompt for the configured variant.
 
-    Few-shot demonstrations are drawn from the training split only, so the
-    test-split scores are not inflated by the model having seen the answers.
+    Few-shot demonstrations and the calibration statistics are drawn from the
+    training split only, so test-split scores are not inflated by the model
+    having seen the answers.
     """
     config = config or workspace.config
     few_shot_block = ""
-    if config.prompt_variant == "few_shot":
+    calibration_block = ""
+
+    if config.prompt_variant in {"few_shot", "calibrated"}:
         chosen = select_few_shot_units(
             workspace.train, workspace.adjudicated, config.few_shot_k, seed=config.seed
         )
         few_shot_block = render_few_shot(chosen, workspace.gold, workspace.adjudicated)
+
+    if config.prompt_variant == "calibrated":
+        stats = compute_coding_stats(workspace.train, workspace.codebook)
+        calibration_block = stats.render(workspace.codebook)
+
     return build_system_prompt(
         workspace.codebook,
         variant=config.prompt_variant,
         few_shot_block=few_shot_block,
+        calibration_block=calibration_block,
         include_codebook_examples=config.include_codebook_examples,
     )
+
+
+def make_context_builder(
+    workspace: Workspace, config: RunConfig | None = None
+) -> Callable[[dict], str] | None:
+    """Per-unit retrieved neighbours, for the `calibrated` variant.
+
+    Returns None for the other variants, which use one fixed prompt for every
+    unit.
+    """
+    config = config or workspace.config
+    if config.prompt_variant != "calibrated" or config.retrieved_neighbours <= 0:
+        return None
+
+    retriever = NeighbourRetriever(workspace.train)
+    k = config.retrieved_neighbours
+
+    def build(record: dict) -> str:
+        return retriever.render_context(str(record.get("unit_text") or ""), k=k)
+
+    return build

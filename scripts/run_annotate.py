@@ -27,7 +27,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from thematic_ai import RunConfig, annotate_units, evaluate_run  # noqa: E402
-from thematic_ai.pipeline import load_workspace, make_system_prompt  # noqa: E402
+from thematic_ai.pipeline import (  # noqa: E402
+    load_workspace,
+    make_context_builder,
+    make_system_prompt,
+)
 
 UNIT_SELECTIONS = ("all", "unlabelled", "gold", "train", "test")
 
@@ -36,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--backend", choices=("openai", "ollama"), default="ollama")
     parser.add_argument("--model", default="", help="defaults to gpt-5.1 / qwen3.5:latest")
-    parser.add_argument("--prompt-variant", choices=("codebook_only", "few_shot"), default="codebook_only")
+    parser.add_argument("--prompt-variant", choices=("codebook_only", "few_shot", "calibrated"), default="calibrated")
     parser.add_argument("--units", choices=UNIT_SELECTIONS, default="all")
     parser.add_argument("--limit", type=int, default=0, help="annotate only the first N units")
     parser.add_argument("--few-shot-k", type=int, default=12)
@@ -44,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--reasoning-effort",
         choices=("none", "low", "medium", "high"),
-        default="low",
+        default="medium",
         help="GPT-5.1 only",
     )
     parser.add_argument("--think", action="store_true", help="let an Ollama thinking model reason first")
@@ -104,7 +108,14 @@ def main(argv: list[str] | None = None) -> int:
             eta = (total - done) / rate if rate else 0
             print(f"  {done}/{total} units  {rate:.2f}/s  eta {eta/60:.1f} min", file=sys.stderr)
 
-    run = annotate_units(selection, workspace.codebook, config, system_prompt, progress=progress)
+    run = annotate_units(
+        selection,
+        workspace.codebook,
+        config,
+        system_prompt,
+        progress=progress,
+        context_builder=make_context_builder(workspace, config),
+    )
     paths = run.save()
 
     print(f"\ndone in {(time.perf_counter() - started)/60:.1f} min", file=sys.stderr)

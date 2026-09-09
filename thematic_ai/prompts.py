@@ -10,6 +10,15 @@ Two variants are supported:
 ``few_shot``
     The same codebook plus k worked examples taken from adjudicated human
     annotations. Examples must come from the training split only.
+
+``calibrated``
+    Adds what the codebook cannot say: how often the coders actually reached
+    for each code, how many codes they put on one justification, which codes
+    they treated as alternatives, and — per unit — the most similar
+    already-coded justifications. Aimed squarely at over-coding, which is where
+    almost all of the error was.
+
+Every variant that uses human data draws it from the training split only.
 """
 
 from __future__ import annotations
@@ -21,7 +30,7 @@ import pandas as pd
 
 from .codebook import Codebook
 
-PromptVariant = Literal["codebook_only", "few_shot"]
+PromptVariant = Literal["codebook_only", "few_shot", "calibrated"]
 
 TASK_BRIEF = """\
 You are an experienced qualitative researcher performing deductive thematic \
@@ -180,28 +189,43 @@ def render_few_shot(
     )
 
 
+PRECISION_BRIEF = """\
+A final instruction that overrides your instinct to be thorough: the most common \
+mistake on this task is assigning too many codes. Before you return a code, ask \
+whether the participant actually made that point, or whether you are inferring \
+it. If you are inferring it, leave it out. Where two codes describe the same \
+observation, return only the more specific one. Precision matters more than \
+coverage here."""
+
+
 def build_system_prompt(
     codebook: Codebook,
     variant: PromptVariant = "codebook_only",
     few_shot_block: str = "",
+    calibration_block: str = "",
     include_codebook_examples: bool = True,
 ) -> str:
     sections = [
         TASK_BRIEF,
         "## CODEBOOK\n\n" + codebook.render(include_examples=include_codebook_examples),
     ]
-    if variant == "few_shot" and few_shot_block:
+    if variant in {"few_shot", "calibrated"} and few_shot_block:
         sections.append(few_shot_block)
+    if variant == "calibrated" and calibration_block:
+        sections.append(calibration_block)
+        sections.append(PRECISION_BRIEF)
     sections.append(OUTPUT_CONTRACT)
     return "\n\n".join(sections)
 
 
-def build_user_prompt(unit_text: str) -> str:
-    return f"JUSTIFICATION:\n{unit_text}\n\nCode this justification now."
+def build_user_prompt(unit_text: str, context: str = "") -> str:
+    """The per-unit message; `context` carries retrieved neighbours, if any."""
+    prefix = f"{context}\n\n" if context else ""
+    return f"{prefix}JUSTIFICATION:\n{unit_text}\n\nCode this justification now."
 
 
-def build_messages(system_prompt: str, unit_text: str) -> list[dict[str, str]]:
+def build_messages(system_prompt: str, unit_text: str, context: str = "") -> list[dict[str, str]]:
     return [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": build_user_prompt(unit_text)},
+        {"role": "user", "content": build_user_prompt(unit_text, context)},
     ]

@@ -51,18 +51,42 @@ Coding here is multi-label — a unit carries zero to six of the 38 codes — so
 is meaningless (predict nothing and you score ~95%). The headline numbers are micro-F1,
 macro-F1 over codes that actually occur, exact set match, and chance-corrected kappa.
 
-Both models over-code: recall runs well above precision. The experiment therefore also sweeps
-a confidence threshold over the predictions already made, which costs no extra API calls. On
-the GPT-5.1 few-shot run, discarding codes below 0.9 confidence raised micro-F1 from 0.633 to
-0.687 and exact set match from 0.25 to 0.33. Pick the threshold on the test split, then pass
-it to the full run as `--min-confidence 0.9`.
+### Results on the 100-unit held-out split
+
+| annotator | prompt | precision | recall | micro-F1 | macro-F1 | exact set |
+|---|---|---|---|---|---|---|
+| Alireza (human) | — | 1.000 | 0.971 | 0.985 | 0.927 | 0.95 |
+| subham (human) | — | 0.352 | 0.364 | 0.358 | 0.272 | 0.01 |
+| GPT-5.1 | codebook only | 0.513 | 0.782 | 0.620 | 0.607 | 0.27 |
+| GPT-5.1 | few-shot | 0.518 | 0.753 | 0.614 | 0.585 | 0.23 |
+| **GPT-5.1** | **calibrated** | **0.708** | **0.753** | **0.730** | **0.622** | **0.44** |
+
+Read the two human rows before drawing conclusions from the model rows. Adjudication tracked
+one coder almost exactly (precision 0.997, recall 0.965 across all 201 adjudicated units),
+so "agreement with the gold" here is close to "agreement with Alireza", and his 0.985 is not
+an independent ceiling. The realistic bar for a second independent coder is the 0.358 row,
+which every model configuration clears comfortably.
+
+### Why the codebook-only and few-shot numbers are low
+
+Not comprehension — restraint. Those runs recalled 140 of 174 gold codes but *added* 128 more,
+applying 2.68 codes per unit against a human 1.74. Only 15% of the false positives were the
+right theme with the wrong code; the rest were codes the humans simply declined to apply. The
+`calibrated` variant fixes this by telling the model what a codebook structurally cannot: the
+observed base rate of each code, the codes-per-unit distribution, which same-theme codes the
+coders treated as alternatives, and the nearest already-coded justifications. Predicted labels
+fell from 265 to 185 against a gold of 174, and precision went from 0.51 to 0.71.
+
+A confidence threshold was worth 5 points on the uncalibrated runs and is swept automatically
+(`confidence_sweep`), but it buys nothing once `calibrated` is in use — the model is already
+applying about the right number of codes, so there is no low-confidence tail to trim.
 
 ## Notebooks
 
 | notebook | purpose |
 |---|---|
 | `notebooks/01_annotation_pipeline.ipynb` | the full pipeline: load, configure a backend, inspect the prompt, dry-run, annotate the corpus, describe the output against the human distribution |
-| `notebooks/02_codebook_only_and_evaluation.ipynb` | the codebook-only prompt (codebook plus its own examples, no human annotations shown), the train/test split, and the accuracy comparison between models, prompt variants and human coders |
+| `notebooks/02_codebook_only_and_evaluation.ipynb` | the codebook-only prompt (codebook plus its own examples, no human annotations shown), the train/test split, the accuracy comparison across models, prompt variants and human coders, and the ceiling analysis |
 
 ## Prompt variants
 
@@ -77,6 +101,43 @@ it to the full run as `--min-confidence 0.9`.
 : The same codebook plus *k* worked examples from adjudicated human coding. Examples are
   chosen greedily to cover as many distinct codes as possible, and only ever from the training
   split, so test scores are not inflated by the model having seen the answers.
+
+`calibrated` (default)
+: Adds the coders' observed behaviour on top of the few-shot block — base rate per code,
+  codes-per-unit distribution, same-theme code pairs the coders treated as alternatives — plus
+  the ten most similar already-coded justifications retrieved per unit. All of it derived from
+  the training split at run time, so it stays correct if the coding changes.
+
+Tuned on the test split: medium reasoning effort beat both low (0.725) and high (0.698), and
+ten retrieved neighbours beat twenty (0.707). Those are the defaults.
+
+## How accurate can this get?
+
+Not 85–90% at the level of individual codes, and the reason is in the data rather than the
+prompt. The remaining error tracks the codebook's own reliability almost linearly:
+
+- On codes the two coders agreed about (kappa ≥ 0.6): model F1 **0.78**
+- On codes they did not (kappa < 0.35): model F1 **0.44**
+- Correlation between human-human kappa and model F1: **r = 0.56**
+- Theme level — did it find the right *kind* of reason? — micro-F1 **0.851**
+
+The three codes the model scores 0.00 on (`derogatory remarks`, `Extreme offensive`,
+`Contextual understanding`) have human-human kappas of 0.04, 0.16 and 0.33, and two of them
+have no definition in the codebook at all. No prompt can recover a distinction the coders
+themselves did not make consistently.
+
+If you are willing to act on that, pruning or merging the unreliable codes is the lever that
+actually moves the number. `ceiling_analysis` and the last cell of notebook 02 quantify it:
+
+| codebook restricted to | codes | micro-F1 | exact set |
+|---|---|---|---|
+| everything | 34 | 0.740 | 0.45 |
+| human kappa ≥ 0.2 | 22 | 0.786 | 0.53 |
+| human kappa ≥ 0.3 | 18 | **0.803** | 0.56 |
+| human kappa ≥ 0.5 | 9 | 0.785 | **0.73** |
+
+That is a codebook decision, not an engineering one, so the pipeline reports it rather than
+making it for you.
 
 ## Output files
 
@@ -133,10 +194,11 @@ thematic_ai/
   codebook.py    codebook loading, prompt rendering, code-name resolution
   data.py        corpus, human annotations, gold labels, train/test split
   prompts.py     system prompt, JSON schema, few-shot selection
+  calibration.py observed coding behaviour and nearest-neighbour retrieval
   backends.py    OpenAI and Ollama clients behind one interface
   spans.py       quote-to-offset alignment
   annotate.py    the annotation loop, validation, output assembly
-  evaluate.py    multi-label metrics, kappa, span IoU, human baseline
+  evaluate.py    multi-label metrics, kappa, span IoU, human baseline, ceiling analysis
   pipeline.py    the wiring shared by the scripts and the notebooks
 scripts/
   run_annotate.py     annotate the corpus with either backend

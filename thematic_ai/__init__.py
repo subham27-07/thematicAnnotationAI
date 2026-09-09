@@ -18,6 +18,7 @@ from .evaluate import (
     agreement_with_each_coder,
     compare_to_human_reliability,
     confidence_sweep,
+    ceiling_analysis,
 )
 from .pipeline import Workspace, load_workspace, make_system_prompt
 
@@ -40,6 +41,7 @@ __all__ = [
     "agreement_with_each_coder",
     "compare_to_human_reliability",
     "confidence_sweep",
+    "ceiling_analysis",
     "Workspace",
     "load_workspace",
     "make_system_prompt",

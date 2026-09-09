@@ -317,6 +317,38 @@ def agreement_with_each_coder(
     return pd.DataFrame(rows)
 
 
+def ceiling_analysis(
+    per_code: pd.DataFrame,
+    reliability_path: str,
+    round_number: int = 1,
+    min_support: int = 3,
+    agreement_floor: float = 0.6,
+    disagreement_ceiling: float = 0.35,
+) -> dict[str, Any]:
+    """Split the model's per-code scores by how well the humans agreed.
+
+    The decisive diagnostic when a model's headline F1 looks disappointing. If
+    the model does well exactly where the coders agreed and badly exactly where
+    they did not, the remaining error is the codebook's inconsistency rather
+    than the model's comprehension, and better prompting will not move it.
+    """
+    merged = compare_to_human_reliability(per_code, reliability_path, round_number)
+    merged = merged[merged["support_gold"] >= min_support].dropna(subset=["human_human_kappa"])
+    agreed = merged[merged["human_human_kappa"] >= agreement_floor]
+    disputed = merged[merged["human_human_kappa"] < disagreement_ceiling]
+    return {
+        "n_codes": int(len(merged)),
+        "f1_where_humans_agreed": float(agreed["f1"].mean()) if len(agreed) else float("nan"),
+        "n_codes_humans_agreed": int(len(agreed)),
+        "f1_where_humans_disagreed": float(disputed["f1"].mean()) if len(disputed) else float("nan"),
+        "n_codes_humans_disagreed": int(len(disputed)),
+        "kappa_f1_correlation": float(merged["human_human_kappa"].corr(merged["f1"])),
+        "detail": merged[["code", "support_gold", "human_human_kappa", "f1"]].sort_values(
+            "human_human_kappa", ascending=False
+        ),
+    }
+
+
 def compare_to_human_reliability(
     per_code: pd.DataFrame, reliability_path: str, round_number: int = 1
 ) -> pd.DataFrame:

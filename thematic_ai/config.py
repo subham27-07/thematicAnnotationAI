@@ -59,19 +59,22 @@ class RunConfig:
 
     backend: str = "ollama"
     model: str = ""
-    prompt_variant: str = "codebook_only"
+    prompt_variant: str = "calibrated"
 
     # Generation controls. GPT-5.1 accepts reasoning effort "none"/"low"/
     # "medium"/"high"; Ollama models ignore it and use `think` instead.
     temperature: float = 0.0
-    reasoning_effort: str = "low"
+    reasoning_effort: str = "medium"
     think: bool = False
     max_output_tokens: int = 4096
     seed: int = 20260909
 
-    # Few-shot settings (only used when prompt_variant == "few_shot").
+    # Few-shot settings (used by prompt_variant "few_shot" and "calibrated").
     few_shot_k: int = 12
     few_shot_source: str = "adjudicated"  # adjudicated | union | intersection
+
+    # Nearest-neighbour demonstrations retrieved per unit ("calibrated" only).
+    retrieved_neighbours: int = 10
 
     # Codebook rendering.
     include_codebook_examples: bool = True
@@ -127,8 +130,10 @@ class RunConfig:
     def run_key(self) -> str:
         """Stable identifier for cache files and output filenames."""
         parts = [self.backend, self.model_slug, self.prompt_variant]
-        if self.prompt_variant == "few_shot":
+        if self.prompt_variant in {"few_shot", "calibrated"}:
             parts.append(f"k{self.few_shot_k}")
+        if self.prompt_variant == "calibrated":
+            parts.append(f"n{self.retrieved_neighbours}")
         if self.run_label:
             parts.append(self.run_label)
         return "__".join(parts)

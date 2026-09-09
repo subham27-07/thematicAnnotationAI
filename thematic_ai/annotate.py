@@ -8,6 +8,7 @@ renaming.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -133,7 +134,12 @@ class AnnotationRun:
 
 
 class _Cache:
-    """Append-only JSONL cache so an interrupted run resumes for free."""
+    """Append-only JSONL cache so an interrupted run resumes for free.
+
+    Entries are keyed by unit *and* by a hash of the per-unit context, so a
+    retrieval-augmented run does not serve answers produced under a different
+    set of retrieved examples.
+    """
 
     def __init__(self, path: Path, enabled: bool = True):
         self.path = path
@@ -148,16 +154,20 @@ class _Cache:
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                self.entries[record["unit_id"]] = record
+                self.entries[self._key(record["unit_id"], record.get("context_hash", ""))] = record
 
-    def get(self, unit_id: str) -> dict[str, Any] | None:
-        return self.entries.get(unit_id) if self.enabled else None
+    @staticmethod
+    def _key(unit_id: str, context_hash: str) -> str:
+        return f"{unit_id}|{context_hash}" if context_hash else unit_id
+
+    def get(self, unit_id: str, context_hash: str = "") -> dict[str, Any] | None:
+        return self.entries.get(self._key(unit_id, context_hash)) if self.enabled else None
 
     def put(self, record: dict[str, Any]) -> None:
         if not self.enabled:
             return
         with self._lock:
-            self.entries[record["unit_id"]] = record
+            self.entries[self._key(record["unit_id"], record.get("context_hash", ""))] = record
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a") as handle:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -259,8 +269,14 @@ def annotate_units(
     backend: LLMBackend | None = None,
     progress: Callable[[int, int], None] | None = None,
     verify_backend: bool = True,
+    context_builder: Callable[[dict[str, Any]], str] | None = None,
 ) -> AnnotationRun:
-    """Annotate every row of `units` (needs `unit_id` and `unit_text`)."""
+    """Annotate every row of `units` (needs `unit_id` and `unit_text`).
+
+    `context_builder` optionally returns per-unit text to prepend to the user
+    message, which is how retrieval-augmented prompting is supported without
+    rebuilding the (cached, expensive) system prompt for every unit.
+    """
     for column in ("unit_id", "unit_text"):
         if column not in units.columns:
             raise ValueError(f"units frame needs a {column!r} column")
@@ -291,15 +307,21 @@ def annotate_units(
 
     def _work(record: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         unit_id = record["unit_id"]
-        cached = cache.get(unit_id)
+        text = str(record.get("unit_text") or "").strip()
+        context = context_builder(record) if (context_builder and text) else ""
+        context_hash = (
+            hashlib.sha256(context.encode("utf-8")).hexdigest()[:12] if context else ""
+        )
+
+        cached = cache.get(unit_id, context_hash)
         if cached is not None:
             _tick()
             return unit_id, {**cached, "from_cache": True}
 
-        text = str(record.get("unit_text") or "").strip()
         if not text:
             payload = {
                 "unit_id": unit_id,
+                "context_hash": context_hash,
                 "answer": {"codes": [], "unit_note": ""},
                 "status": "empty_text",
                 "error": "",
@@ -311,9 +333,12 @@ def annotate_units(
             return unit_id, {**payload, "from_cache": False}
 
         try:
-            answer, response = backend.complete_json(build_messages(system_prompt, text), schema)
+            answer, response = backend.complete_json(
+                build_messages(system_prompt, text, context), schema
+            )
             payload = {
                 "unit_id": unit_id,
+                "context_hash": context_hash,
                 "answer": answer,
                 "status": "ok",
                 "error": "",
@@ -324,6 +349,7 @@ def annotate_units(
         except BackendError as exc:
             payload = {
                 "unit_id": unit_id,
+                "context_hash": context_hash,
                 "answer": {"codes": [], "unit_note": ""},
                 "status": "failed",
                 "error": str(exc)[:500],

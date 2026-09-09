@@ -23,11 +23,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from thematic_ai import RunConfig, annotate_units, evaluate_run  # noqa: E402
 from thematic_ai.evaluate import (  # noqa: E402
     agreement_with_each_coder,
+    ceiling_analysis,
     compare_to_human_reliability,
     confidence_sweep,
     human_baseline,
 )
-from thematic_ai.pipeline import load_workspace, make_system_prompt  # noqa: E402
+from thematic_ai.pipeline import (  # noqa: E402
+    load_workspace,
+    make_context_builder,
+    make_system_prompt,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,13 +42,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--prompt-variant",
         nargs="+",
-        choices=("codebook_only", "few_shot"),
-        default=["codebook_only", "few_shot"],
+        choices=("codebook_only", "few_shot", "calibrated"),
+        default=["codebook_only", "few_shot", "calibrated"],
     )
     parser.add_argument("--few-shot-k", type=int, default=12)
     parser.add_argument("--test-size", type=float, default=0.5)
     parser.add_argument("--limit", type=int, default=0, help="cap the test set, for a quick check")
-    parser.add_argument("--reasoning-effort", choices=("none", "low", "medium", "high"), default="low")
+    parser.add_argument("--reasoning-effort", choices=("none", "low", "medium", "high"), default="medium")
     parser.add_argument("--think", action="store_true")
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--no-cache", action="store_true")
@@ -100,7 +105,14 @@ def main(argv: list[str] | None = None) -> int:
             if done % 10 == 0 or done == total:
                 print(f"  {done}/{total}", file=sys.stderr)
 
-        run = annotate_units(test, workspace.codebook, config, system_prompt, progress=progress)
+        run = annotate_units(
+            test,
+            workspace.codebook,
+            config,
+            system_prompt,
+            progress=progress,
+            context_builder=make_context_builder(workspace, config),
+        )
         run.save(output_dir, prefix="eval")
         elapsed = time.perf_counter() - started
 
@@ -115,6 +127,10 @@ def main(argv: list[str] | None = None) -> int:
         agreement_with_each_coder(
             run, workspace.annotations, workspace.codebook, test_ids
         ).to_csv(eval_dir / f"vs_each_coder__{tag}.csv", index=False)
+
+        reliability_path = str(workspace.config.codebook_path.parent / "reliability-all-rounds.csv")
+        ceiling = ceiling_analysis(result.per_code, reliability_path)
+        ceiling.pop("detail").to_csv(eval_dir / f"ceiling__{tag}.csv", index=False)
 
         sweep = confidence_sweep(run, workspace.gold_labels, workspace.codebook)
         sweep.to_csv(eval_dir / f"confidence_sweep__{tag}.csv", index=False)
@@ -133,6 +149,12 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"  micro-F1 {result.overall['micro_f1']:.3f} | macro-F1 {result.overall['macro_f1_present_codes']:.3f} "
             f"| exact-set {result.overall['exact_set_match']:.3f} | kappa {result.overall['macro_kappa_present_codes']:.3f}",
+            file=sys.stderr,
+        )
+        print(
+            f"  on codes the two humans agreed about (kappa>=0.6, n={ceiling['n_codes_humans_agreed']}): "
+            f"F1 {ceiling['f1_where_humans_agreed']:.3f}; on codes they did not "
+            f"(kappa<0.35, n={ceiling['n_codes_humans_disagreed']}): F1 {ceiling['f1_where_humans_disagreed']:.3f}",
             file=sys.stderr,
         )
         if best["min_confidence"] > 0:
