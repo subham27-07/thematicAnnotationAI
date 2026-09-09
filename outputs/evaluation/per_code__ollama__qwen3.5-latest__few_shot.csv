@@ -1,0 +1,39 @@
+code,support_gold,support_pred,tp,fp,fn,tn,precision,recall,f1,percent_agreement,cohens_kappa
+Hate speech and offensive language,8,8,7,1,1,16,0.875,0.875,0.875,0.92,0.8161764705882354
+Threats of violence,6,8,6,2,0,17,0.75,1.0,0.8571428571428571,0.92,0.8031496062992127
+No offensive content,4,8,4,4,0,17,0.5,1.0,0.6666666666666666,0.84,0.576271186440678
+Expressed uncertainty,3,2,2,0,1,22,1.0,0.6666666666666666,0.8,0.96,0.7787610619469024
+Calm and thoughtful,3,1,1,0,2,22,1.0,0.3333333333333333,0.5,0.92,0.4680851063829789
+Majority offesnive,2,2,2,0,0,23,1.0,1.0,1.0,1.0,1.0
+one message is enough (offensive),2,4,2,2,0,21,0.5,1.0,0.6666666666666666,0.92,0.6268656716417911
+Personal opinions and thoughts,2,1,1,0,1,23,1.0,0.5,0.6666666666666666,0.96,0.6478873239436618
+derogatory remarks,2,0,0,0,2,23,0.0,0.0,0.0,0.92,0.0
+One-off offensive,2,1,0,1,2,22,0.0,0.0,0.0,0.88,-0.056338028169013725
+Contextual understanding,2,1,0,1,2,22,0.0,0.0,0.0,0.88,-0.056338028169013725
+Could be joking,1,1,1,0,0,24,1.0,1.0,1.0,1.0,1.0
+Moral reasoning,1,1,1,0,0,24,1.0,1.0,1.0,1.0,1.0
+Need to know policy and TOS,1,1,1,0,0,24,1.0,1.0,1.0,1.0,1.0
+Ban if behavior continues,1,1,1,0,0,24,1.0,1.0,1.0,1.0,1.0
+Mix of offensive and non-offensive,1,3,1,2,0,22,0.3333333333333333,1.0,0.5,0.92,0.4680851063829789
+Appeal to intent,1,4,1,3,0,21,0.25,1.0,0.4,0.88,0.3589743589743595
+Not too offensive,1,4,1,3,0,21,0.25,1.0,0.4,0.88,0.3589743589743595
+Death wish,1,2,0,2,1,22,0.0,0.0,0.0,0.88,-0.056338028169013725
+Harm other person,1,0,0,0,1,24,0.0,0.0,0.0,0.96,0.0
+Consistent offensive behavior,1,1,0,1,1,23,0.0,0.0,0.0,0.92,-0.04166666666666643
+Normal behavior,1,0,0,0,1,24,0.0,0.0,0.0,0.96,0.0
+Extreme offensive,0,0,0,0,0,25,0.0,0.0,0.0,1.0,1.0
+racial remark,0,0,0,0,0,25,0.0,0.0,0.0,1.0,1.0
+misinformation,0,0,0,0,0,25,0.0,0.0,0.0,1.0,1.0
+Troll or bot,0,1,0,1,0,24,0.0,0.0,0.0,0.96,0.0
+negative consequences,0,2,0,2,0,23,0.0,0.0,0.0,0.92,0.0
+Poster is a bad person,0,1,0,1,0,24,0.0,0.0,0.0,0.96,0.0
+Would revise the decision,0,0,0,0,0,25,0.0,0.0,0.0,1.0,1.0
+References the recommendation,0,0,0,0,0,25,0.0,0.0,0.0,1.0,1.0
+Needed to look at more messages,0,0,0,0,0,25,0.0,0.0,0.0,1.0,1.0
+Not offensive at all,0,0,0,0,0,25,0.0,0.0,0.0,1.0,1.0
+Temporary suspension,0,0,0,0,0,25,0.0,0.0,0.0,1.0,1.0
+Permanent ban,0,1,0,1,0,24,0.0,0.0,0.0,0.96,0.0
+Consequences beyond suspencion,0,0,0,0,0,25,0.0,0.0,0.0,1.0,1.0
+Do not suspend,0,2,0,2,0,23,0.0,0.0,0.0,0.92,0.0
+comment too short and not sure what needs to be done,0,0,0,0,0,25,0.0,0.0,0.0,1.0,1.0
+positive content,0,0,0,0,0,25,0.0,0.0,0.0,1.0,1.0

@@ -1,0 +1,11 @@
+# Core pipeline
+pandas>=2.0
+numpy>=1.24
+requests>=2.28
+
+# OpenAI backend (not needed for a pure Ollama run)
+openai>=1.99
+
+# Notebooks and plots
+jupyterlab>=4.0
+matplotlib>=3.7

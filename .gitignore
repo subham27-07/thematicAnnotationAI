@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.env
+.venv/
+venv/
+
+# Model responses are reproducible from the manifests; the cache can get large.
+outputs/cache/
