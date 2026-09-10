@@ -20,7 +20,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from thematic_ai import RunConfig, annotate_units, evaluate_run, refine_run  # noqa: E402
+from thematic_ai import RunConfig, annotate_units, evaluate_run, frequent_codes, refine_run  # noqa: E402
 from thematic_ai.evaluate import (  # noqa: E402
     agreement_with_each_coder,
     ceiling_analysis,
@@ -121,7 +121,10 @@ def main(argv: list[str] | None = None) -> int:
         elapsed = time.perf_counter() - started
 
         result = evaluate_run(run, workspace.gold_labels, workspace.codebook)
-        tag = f"{config.backend}__{config.model_slug}__{variant}"
+        core_codes = frequent_codes(workspace.train, min_support=8)
+        core = evaluate_run(run, workspace.gold_labels, workspace.codebook, codes=core_codes)
+        split_tag = "all_gold" if args.test_size <= 0 else "test_split"
+        tag = f"{config.backend}__{config.model_slug}__{variant}__{split_tag}"
         result.per_code.to_csv(eval_dir / f"per_code__{tag}.csv", index=False)
         result.per_theme.to_csv(eval_dir / f"per_theme__{tag}.csv", index=False)
         result.errors.to_csv(eval_dir / f"errors__{tag}.csv", index=False)
@@ -155,7 +158,9 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         print(
-            f"  micro-F1 {result.overall['micro_f1']:.3f} | macro-F1 {result.overall['macro_f1_present_codes']:.3f} "
+            f"  all-codes micro-F1 {result.overall['micro_f1']:.3f} | "
+            f"headline micro-F1 {core.overall['micro_f1']:.3f} | "
+            f"macro-F1 {result.overall['macro_f1_present_codes']:.3f} "
             f"| exact-set {result.overall['exact_set_match']:.3f} | kappa {result.overall['macro_kappa_present_codes']:.3f}",
             file=sys.stderr,
         )
@@ -176,7 +181,8 @@ def main(argv: list[str] | None = None) -> int:
     summary = pd.DataFrame(summaries)
     lead = [c for c in ("annotator", "kind", "prompt_variant") if c in summary.columns]
     summary = summary[lead + [c for c in summary.columns if c not in lead]]
-    summary_path = eval_dir / f"summary__{args.backend}__{base.model_slug}.csv"
+    split_tag = "all_gold" if args.test_size <= 0 else "test_split"
+    summary_path = eval_dir / f"summary__{args.backend}__{base.model_slug}__{split_tag}.csv"
     summary.to_csv(summary_path, index=False)
 
     print("\n" + summary.to_string(index=False), file=sys.stderr)
