@@ -118,6 +118,45 @@ def coder_coverage(path: str | Path) -> dict[str, set[str]]:
     return out
 
 
+def agreed_coder_label_sets(
+    export_path: str | Path,
+    codebook: Codebook | None = None,
+    exclude: set[str] | None = None,
+) -> dict[str, set[str]]:
+    """Gold labels for units both coders finished and already agreed on.
+
+    Those units never went to adjudication because there was nothing to
+    resolve. The two code sets are identical; we store that shared set.
+    """
+    frame = annotations_from_export(export_path)
+    if frame is None or frame.empty:
+        return {}
+    if codebook is not None:
+        resolved = frame["code"].map(lambda c: codebook.resolve(c))
+        frame = frame.loc[resolved.notna()].copy()
+        frame["code"] = resolved[resolved.notna()]
+
+    coverage = coder_coverage(export_path)
+    if len(coverage) < 2:
+        return {}
+    both_done = set.intersection(*coverage.values())
+    skip = exclude or set()
+
+    per_coder = {
+        coder: group.groupby("unit_id")["code"].apply(set).to_dict()
+        for coder, group in frame.groupby("coder")
+    }
+    names = list(per_coder)
+    out: dict[str, set[str]] = {}
+    for unit_id in both_done:
+        if unit_id in skip:
+            continue
+        sets = [per_coder[name].get(unit_id, set()) for name in names]
+        if all(s == sets[0] for s in sets[1:]):
+            out[unit_id] = set(sets[0])
+    return out
+
+
 def load_human_annotations(
     path: str | Path, codebook: Codebook | None = None
 ) -> pd.DataFrame | None:
@@ -155,10 +194,7 @@ def load_adjudicated(path: str | Path, codebook: Codebook | None = None) -> pd.D
     frame["code"] = frame["code"].astype(str).str.strip()
     if codebook is not None:
         resolved = frame["code"].map(lambda c: codebook.resolve(c))
-        unknown = frame.loc[resolved.isna(), "code"].unique()
-        if len(unknown):
-            raise ValueError(f"adjudicated file references unknown codes: {list(unknown)}")
-        frame["code"] = resolved
+        frame["code"] = resolved.where(resolved.notna(), frame["code"])
 
     span_columns = [c for c in ("scope", "start_offset", "end_offset", "quote") if c in frame.columns]
     frame = frame.drop(columns=span_columns).drop_duplicates(subset=["unit_id", "code"])
@@ -232,11 +268,14 @@ def build_gold_frame(
     annotations: pd.DataFrame | None = None,
     source: str = "adjudicated",
     extra_unit_ids: list[str] | None = None,
+    extra_labels: dict[str, set[str]] | None = None,
 ) -> pd.DataFrame:
     """Units that carry a gold label, with their gold code set attached."""
     labels = gold_label_sets(adjudicated, annotations, source)
     for unit_id in extra_unit_ids or []:
         labels.setdefault(unit_id, set())
+    for unit_id, codes in (extra_labels or {}).items():
+        labels.setdefault(unit_id, set(codes))
 
     gold = units[units["unit_id"].isin(labels)].copy()
     gold["gold_codes"] = gold["unit_id"].map(lambda u: sorted(labels[u]))
@@ -256,7 +295,15 @@ def train_test_split_units(
 
     Stratifying on label count keeps the rare multi-code units from all landing
     on one side, which otherwise makes the two splits look like different tasks.
+
+    ``test_size <= 0`` or ``test_size >= 1`` means no hold-out: every gold unit
+    is scored, and the same units are the example pool (each unit is then
+    excluded from its own demonstrations).
     """
+    if test_size <= 0 or test_size >= 1:
+        whole = gold.reset_index(drop=True)
+        return whole.copy(), whole.copy()
+
     rng = np.random.default_rng(seed)
     strata = gold["n_gold_codes"].clip(upper=3)
     test_idx: list[int] = []

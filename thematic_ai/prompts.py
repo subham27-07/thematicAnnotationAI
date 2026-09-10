@@ -29,6 +29,7 @@ from typing import Any, Iterable, Literal
 import pandas as pd
 
 from .codebook import Codebook
+from .coding_rules import CODING_GUIDANCE, CONTRASTIVE_EXAMPLES
 
 PromptVariant = Literal["codebook_only", "few_shot", "calibrated"]
 
@@ -48,7 +49,8 @@ Rules:
 1. Use ONLY the codes listed in the codebook below, spelled exactly as given. \
 Never invent, merge or rename a code.
 2. Assign every code the text supports. Most justifications get one or two \
-codes; some get none, and a few get four or more.
+codes; some get none, and a few get four or more. A specific code and a \
+broader neighbour can both apply when the text makes both points.
 3. Code what the participant actually wrote, not what you infer about the \
 account. If the participant does not say it, do not code it.
 4. Respect each code's "do not apply when" guidance, and prefer the most \
@@ -171,12 +173,22 @@ def render_few_shot(unit_ids: Iterable[str], gold: pd.DataFrame) -> str:
 
 
 PRECISION_BRIEF = """\
-A final instruction that overrides your instinct to be thorough: the most common \
-mistake on this task is assigning too many codes. Before you return a code, ask \
-whether the participant actually made that point, or whether you are inferring \
-it. If you are inferring it, leave it out. Where two codes describe the same \
-observation, return only the more specific one. Precision matters more than \
-coverage here."""
+Two failure modes to avoid:
+
+UNDER-CODING specific ideas. If the participant names racism, a death wish, \
+harm, insults, a repeated pattern, calm/thoughtful tone, ordinary behavior, \
+personal opinions, police/authorities, or a permanent ban, apply that specific \
+code. Do not swallow it into Hate speech, Threats of violence, No offensive \
+content, or Majority offesnive.
+
+OVER-CODING extras. Do not add Mix of offensive and non-offensive, one message \
+is enough (offensive), Obvious an clear suspension, Do not suspend, or Poster \
+is a bad person unless the wording really is that idea. "Should be suspended" \
+is not Permanent ban. "Nothing offensive" is No offensive content, not Do not \
+suspend.
+
+When two codes name two different points, return both. Precision still matters \
+more than stacking near-synonyms."""
 
 
 def build_system_prompt(
@@ -189,6 +201,8 @@ def build_system_prompt(
     sections = [
         TASK_BRIEF,
         "## CODEBOOK\n\n" + codebook.render(include_examples=include_codebook_examples),
+        CODING_GUIDANCE,
+        CONTRASTIVE_EXAMPLES,
     ]
     if variant in {"few_shot", "calibrated"} and few_shot_block:
         sections.append(few_shot_block)

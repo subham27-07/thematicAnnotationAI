@@ -15,6 +15,7 @@ from .annotate import annotate_units, AnnotationRun
 from .refine import refine_run
 from .evaluate import (
     evaluate_run,
+    frequent_codes,
     human_baseline,
     human_reliability,
     agreement_with_each_coder,
@@ -40,6 +41,7 @@ __all__ = [
     "refine_run",
     "AnnotationRun",
     "evaluate_run",
+    "frequent_codes",
     "human_baseline",
     "human_reliability",
     "agreement_with_each_coder",

@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 
 from .codebook import Codebook
+from .coding_rules import COMPETING_GROUPS, matched_codes
 
 TOKEN = re.compile(r"[a-z']+")
 
@@ -39,6 +40,7 @@ class CodingStats:
     never_used: list[str]
     exclusive_pairs: list[tuple[str, str]]
     rarely_together: list[tuple[str, str, float]]
+    companion_pairs: list[tuple[str, str, float]]
 
     def render(self, codebook: Codebook, max_pairs: int = 14) -> str:
         lines = [
@@ -52,8 +54,8 @@ class CodingStats:
             lines.append(f"  {count} code(s): {share:.0%} of justifications")
         lines += [
             "",
-            "Be sparing. Assign a code only where the participant makes that point "
-            "explicitly. Assigning more than 3 codes is almost always wrong.",
+            "Be sparing with extras, but do not drop a specific code whose wording "
+            "is in the text. Assigning more than 4 codes is almost always wrong.",
             "",
             "How often each code was applied, as a share of justifications:",
         ]
@@ -93,6 +95,18 @@ class CodingStats:
                     f"  {a} + {b}: both applied in only {rate:.0%} of the "
                     f"justifications carrying either"
                 )
+
+        if self.companion_pairs:
+            lines += [
+                "",
+                "These specific codes usually appear together with a broader one. If the "
+                "wording for the specific code is present, apply it as well as the broader "
+                "code — do not swallow the specific into the general:",
+            ]
+            for specific, general, rate in self.companion_pairs[:max_pairs]:
+                lines.append(
+                    f"  {specific} (with {general} in {rate:.0%} of its uses)"
+                )
         return "\n".join(lines)
 
 
@@ -115,35 +129,54 @@ def compute_coding_stats(
 
     never_used = base_rates.loc[base_rates["n_units"] == 0, "code"].tolist()
 
-    # Pairs that are semantically adjacent (same theme) and reasonably common,
-    # yet never co-occur. Those are the choices the model keeps getting wrong by
-    # hedging and applying both.
-    exclusive: list[tuple[str, str]] = []
-    rarely_together: list[tuple[str, str, float]] = []
-    co_occurrence = Counter()
+    co_occurrence: Counter[tuple[str, str]] = Counter()
     for s in label_sets:
         for a in s:
             for b in s:
                 if a < b:
                     co_occurrence[(a, b)] += 1
-    frequent = [c for c in codebook.names if applied.get(c, 0) >= min_support_for_exclusivity]
-    for i, a in enumerate(frequent):
-        for b in frequent[i + 1 :]:
-            key = (a, b) if a < b else (b, a)
-            if codebook.theme_of(a) != codebook.theme_of(b):
-                continue
-            both = co_occurrence[key]
-            if both == 0:
-                exclusive.append((a, b))
-                continue
-            # Jaccard: how often both were applied, out of the units carrying
-            # either. Low means the coders saw them as competing descriptions.
-            either = applied[a] + applied[b] - both
-            rate = both / either if either else 0.0
-            if rate < 0.34:
-                rarely_together.append((a, b, rate))
+
+    competing: set[tuple[str, str]] = set()
+    for group in COMPETING_GROUPS:
+        members = [c for c in group if c in codebook]
+        for i, a in enumerate(members):
+            for b in members[i + 1 :]:
+                competing.add((a, b) if a < b else (b, a))
+
+    exclusive: list[tuple[str, str]] = []
+    rarely_together: list[tuple[str, str, float]] = []
+    for a, b in competing:
+        if applied.get(a, 0) < min_support_for_exclusivity and applied.get(b, 0) < min_support_for_exclusivity:
+            continue
+        key = (a, b) if a < b else (b, a)
+        both = co_occurrence[key]
+        if both == 0:
+            exclusive.append((a, b))
+            continue
+        either = applied[a] + applied[b] - both
+        rate = both / either if either else 0.0
+        if rate < 0.34:
+            rarely_together.append((a, b, rate))
     exclusive.sort(key=lambda pair: -(applied[pair[0]] + applied[pair[1]]))
     rarely_together.sort(key=lambda triple: -(applied[triple[0]] + applied[triple[1]]))
+
+    # Rare code that usually rides along with a more common one. Jaccard is
+    # low (the common code is used alone a lot) but P(common|rare) is high, so
+    # the model must not treat them as alternatives.
+    companion_pairs: list[tuple[str, str, float]] = []
+    frequent = [c for c in codebook.names if applied.get(c, 0) >= min_support_for_exclusivity]
+    for rare in frequent:
+        for common in frequent:
+            if rare == common or applied[rare] > applied[common]:
+                continue
+            key = (rare, common) if rare < common else (common, rare)
+            both = co_occurrence[key]
+            if both < 2:
+                continue
+            p_common_given_rare = both / applied[rare]
+            if p_common_given_rare >= 0.4:
+                companion_pairs.append((rare, common, p_common_given_rare))
+    companion_pairs.sort(key=lambda t: (-t[2], -applied[t[0]]))
 
     return CodingStats(
         n_units=n_units,
@@ -153,6 +186,7 @@ def compute_coding_stats(
         never_used=never_used,
         exclusive_pairs=exclusive,
         rarely_together=rarely_together,
+        companion_pairs=companion_pairs,
     )
 
 
@@ -188,31 +222,97 @@ class NeighbourRetriever:
         norm = np.sqrt(sum(v * v for v in vector.values()))
         return {t: v / norm for t, v in vector.items()} if norm else {}
 
-    def retrieve(self, text: str, k: int = 10) -> list[tuple[str, float]]:
+    def retrieve(
+        self, text: str, k: int = 10, exclude: set[str] | None = None
+    ) -> list[tuple[str, float]]:
         query = self._vectorise(_tokenise(text))
         if not query:
             return []
+        skip = exclude or set()
         scored = []
         for unit_id, vector in zip(self.unit_ids, self.vectors):
+            if unit_id in skip:
+                continue
             shared = query.keys() & vector.keys()
             if shared:
                 scored.append((unit_id, sum(query[t] * vector[t] for t in shared)))
         scored.sort(key=lambda pair: -pair[1])
         return scored[:k]
 
-    def render_context(self, text: str, k: int = 10, min_similarity: float = 0.03) -> str:
+    def render_context(
+        self,
+        text: str,
+        k: int = 10,
+        min_similarity: float = 0.03,
+        exclude: set[str] | None = None,
+    ) -> str:
         """The retrieved neighbours, formatted for the user message."""
-        neighbours = [(u, s) for u, s in self.retrieve(text, k) if s >= min_similarity]
+        neighbours = [
+            (u, s) for u, s in self.retrieve(text, k, exclude=exclude) if s >= min_similarity
+        ]
         if not neighbours:
             return ""
         texts = dict(zip(self.unit_ids, self.texts))
         lines = [
             "Here are the most similar justifications from the human-coded set, with the "
-            "codes the coders actually assigned. Match their level of restraint.",
+            "codes the coders actually assigned. Match both their restraint and their "
+            "specific codes — if a neighbour with similar wording carries a specific "
+            "code (Death wish, racial remark, Consistent offensive behavior, Calm and "
+            "thoughtful, …), prefer that coding grain.",
             "",
         ]
         for unit_id, _ in neighbours:
             codes = self.label_sets.get(unit_id, [])
-            lines.append(f'  "{texts[unit_id]}"')
+            snippet = texts[unit_id]
+            if len(snippet) > 280:
+                snippet = snippet[:277] + "..."
+            lines.append(f'  "{snippet}"')
             lines.append(f"    -> {'; '.join(codes) if codes else '(no codes)'}")
         return "\n".join(lines)
+
+
+class CueExampleRetriever:
+    """Gold examples for codes whose wording cues fire in the query.
+
+    Neighbour retrieval surfaces similar *phrasing*, which is dominated by the
+    common codes. Cue examples surface the rare specific codes the model keeps
+    swallowing (Death wish, racial remark, Calm and thoughtful, …).
+    """
+
+    def __init__(self, train_gold: pd.DataFrame):
+        self._examples: dict[str, list[tuple[str, str, tuple[str, ...]]]] = {}
+        for row in train_gold.itertuples():
+            text = str(row.unit_text or "")
+            codes = tuple(row.gold_codes)
+            for code in codes:
+                self._examples.setdefault(code, []).append((row.unit_id, text, codes))
+        for code, items in self._examples.items():
+            items.sort(key=lambda item: len(item[1]))
+
+    def render_context(
+        self,
+        text: str,
+        exclude: set[str] | None = None,
+        per_code: int = 1,
+        max_codes: int = 8,
+    ) -> str:
+        skip = exclude or set()
+        blocks: list[str] = []
+        for code in matched_codes(text)[:max_codes]:
+            shown = 0
+            for unit_id, example, codes in self._examples.get(code, []):
+                if unit_id in skip:
+                    continue
+                snippet = example if len(example) <= 220 else example[:217] + "..."
+                blocks.append(f'  [{code}] "{snippet}"')
+                blocks.append(f"    -> {'; '.join(codes) if codes else '(no codes)'}")
+                shown += 1
+                if shown >= per_code:
+                    break
+        if not blocks:
+            return ""
+        return (
+            "Human-coded examples of specific codes whose wording appears in this "
+            "justification. Copy the coding grain; do not copy a code the current "
+            "text does not actually support.\n\n" + "\n".join(blocks)
+        )

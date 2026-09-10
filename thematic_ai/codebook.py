@@ -124,8 +124,12 @@ class Codebook:
 
 
 def load_codebook(path: str | Path, drop_archived: bool = True) -> Codebook:
+    path = Path(path)
     frame = pd.read_csv(path)
     required = {"theme", "code", "definition"}
+    if required - set(frame.columns):
+        # A title line above the header, e.g. an export note.
+        frame = pd.read_csv(path, skiprows=1)
     missing = required - set(frame.columns)
     if missing:
         raise ValueError(f"codebook is missing columns: {sorted(missing)}")

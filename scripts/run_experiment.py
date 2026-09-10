@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Train/test evaluation of one or more model + prompt configurations.
+"""Evaluate one or more model + prompt configurations on the adjudicated gold.
 
-The adjudicated units are split into a train half and a test half. Few-shot
-demonstrations are drawn from the train half only; every model is scored on the
-same test half, alongside the human coders scored against the same gold labels.
+By default every adjudicated unit is scored. A unit never sees its own gold
+labels; similar examples come from the other units. Pass ``--test-size 0.5``
+for a hold-out split.
 
     python scripts/run_experiment.py --backend ollama --prompt-variant codebook_only few_shot
     python scripts/run_experiment.py --backend openai --model gpt-5.1 --prompt-variant few_shot
@@ -20,7 +20,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from thematic_ai import RunConfig, annotate_units, evaluate_run  # noqa: E402
+from thematic_ai import RunConfig, annotate_units, evaluate_run, refine_run  # noqa: E402
 from thematic_ai.evaluate import (  # noqa: E402
     agreement_with_each_coder,
     ceiling_analysis,
@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=["codebook_only", "few_shot", "calibrated"],
     )
     parser.add_argument("--few-shot-k", type=int, default=12)
-    parser.add_argument("--test-size", type=float, default=0.5)
+    parser.add_argument("--test-size", type=float, default=0.0, help="0 = score every adjudicated unit")
     parser.add_argument("--limit", type=int, default=0, help="cap the test set, for a quick check")
     parser.add_argument("--reasoning-effort", choices=("none", "low", "medium", "high"), default="medium")
     parser.add_argument("--think", action="store_true")
@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
             think=args.think,
             max_workers=args.workers,
             use_cache=not args.no_cache,
-            run_label="test_split",
+            run_label="all_gold" if args.test_size <= 0 else "test_split",
             output_dir=output_dir,
         )
         system_prompt = make_system_prompt(workspace, config)
@@ -114,6 +114,10 @@ def main(argv: list[str] | None = None) -> int:
             context_builder=make_context_builder(workspace, config),
         )
         run.save(output_dir, prefix="eval")
+        if variant == "calibrated":
+            print("  adjudicating second pass...", file=sys.stderr)
+            run = refine_run(run, workspace, progress=progress)
+            run.save(output_dir, prefix="eval_refined")
         elapsed = time.perf_counter() - started
 
         result = evaluate_run(run, workspace.gold_labels, workspace.codebook)

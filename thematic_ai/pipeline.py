@@ -8,11 +8,13 @@ from typing import Callable
 
 import pandas as pd
 
-from .calibration import NeighbourRetriever, compute_coding_stats
+from .calibration import CueExampleRetriever, NeighbourRetriever, compute_coding_stats
 from .codebook import Codebook, load_codebook
+from .coding_rules import render_cue_hints
 from .config import RunConfig
 from .data import (
     adjudicated_unit_ids,
+    agreed_coder_label_sets,
     build_gold_frame,
     coder_coverage,
     gold_label_sets,
@@ -71,13 +73,17 @@ class Workspace:
 def load_workspace(
     config: RunConfig,
     gold_source: str = "adjudicated",
-    test_size: float = 0.5,
+    test_size: float = 0.0,
     include_zero_code_units: bool = True,
 ) -> Workspace:
     """Load the inputs and build the train/test split once.
 
     Required: the codebook and the adjudicated annotations. Everything else is
     read if present and skipped if not.
+
+    By default there is no hold-out (``test_size=0``): every gold unit is
+    scored — adjudicated rows plus units both coders already agreed on.
+    Set ``test_size=0.5`` for a train/test split.
     """
     codebook = load_codebook(config.codebook_path)
     units = load_units(config.dataset_path)
@@ -101,7 +107,22 @@ def load_workspace(
     if include_zero_code_units:
         extra = [u for u in adjudicated_unit_ids(export) if u in set(units["unit_id"])]
 
-    gold = build_gold_frame(units, adjudicated, annotations, gold_source, extra_unit_ids=extra)
+    # Units both coders finished and already agreed on never went to
+    # adjudication — they are gold as well.
+    aligned = agreed_coder_label_sets(
+        export,
+        codebook,
+        exclude=set(adjudicated["unit_id"]) | set(extra),
+    )
+
+    gold = build_gold_frame(
+        units,
+        adjudicated,
+        annotations,
+        gold_source,
+        extra_unit_ids=extra,
+        extra_labels=aligned,
+    )
     train, test = train_test_split_units(gold, test_size=test_size, seed=config.seed)
     labels = {row.unit_id: set(row.gold_codes) for row in gold.itertuples()}
 
@@ -129,8 +150,12 @@ def make_system_prompt(workspace: Workspace, config: RunConfig | None = None) ->
     config = config or workspace.config
     few_shot_block = ""
     calibration_block = ""
+    # When every gold unit is being scored, a fixed few-shot block would show
+    # some units their own labels. Those demonstrations move to per-unit
+    # neighbours instead, with the unit itself excluded.
+    same_pool = set(workspace.train["unit_id"]) == set(workspace.test["unit_id"])
 
-    if config.prompt_variant in {"few_shot", "calibrated"}:
+    if config.prompt_variant in {"few_shot", "calibrated"} and not same_pool:
         chosen = select_few_shot_units(workspace.train, config.few_shot_k, seed=config.seed)
         few_shot_block = render_few_shot(chosen, workspace.gold)
 
@@ -156,13 +181,28 @@ def make_context_builder(
     unit.
     """
     config = config or workspace.config
-    if config.prompt_variant != "calibrated" or config.retrieved_neighbours <= 0:
+    if config.prompt_variant not in {"few_shot", "calibrated"}:
+        return None
+    k = (
+        config.retrieved_neighbours
+        if config.prompt_variant == "calibrated"
+        else config.few_shot_k
+    )
+    if k <= 0:
         return None
 
     retriever = NeighbourRetriever(workspace.train)
-    k = config.retrieved_neighbours
+    cue_examples = CueExampleRetriever(workspace.train)
 
     def build(record: dict) -> str:
-        return retriever.render_context(str(record.get("unit_text") or ""), k=k)
+        unit_id = str(record.get("unit_id") or "")
+        text = str(record.get("unit_text") or "")
+        exclude = {unit_id} if unit_id else None
+        parts = [
+            render_cue_hints(text),
+            cue_examples.render_context(text, exclude=exclude),
+            retriever.render_context(text, k=k, exclude=exclude),
+        ]
+        return "\n\n".join(p for p in parts if p)
 
     return build

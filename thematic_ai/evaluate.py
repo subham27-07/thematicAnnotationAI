@@ -162,11 +162,28 @@ def error_table(
     return pd.DataFrame(rows)
 
 
+def frequent_codes(train_gold: pd.DataFrame, min_support: int = 8) -> list[str]:
+    """Codes that appear often enough in the training split to score stably.
+
+    Rare codes (one or two gold rows) can only land on 0, 0.5 or 1.0 F1, so
+    they drown the headline number without saying much about the model.
+    """
+    counts = pd.Series([code for codes in train_gold["gold_codes"] for code in codes]).value_counts()
+    return [code for code, n in counts.items() if n >= min_support]
+
+
+def project_labels(labels: dict[str, set[str]], codes: list[str]) -> dict[str, set[str]]:
+    """Keep only `codes` in every unit's set."""
+    allowed = set(codes)
+    return {unit: (assigned & allowed) for unit, assigned in labels.items()}
+
+
 def evaluate_run(
     run: Any,
     gold_labels: dict[str, set[str]],
     codebook: Codebook,
     restrict_to_gold_codes: bool = False,
+    codes: list[str] | None = None,
 ) -> EvaluationResult:
     """Score an `AnnotationRun` against gold label sets.
 
@@ -178,7 +195,12 @@ def evaluate_run(
     if not unit_ids:
         raise ValueError("no overlap between the run's units and the gold set")
 
-    codes = sorted({c for u in unit_ids for c in gold_labels[u]}) if restrict_to_gold_codes else codebook.names
+    if codes is not None:
+        codes = [c for c in codes if c in set(codebook.names)]
+    elif restrict_to_gold_codes:
+        codes = sorted({c for u in unit_ids for c in gold_labels[u]})
+    else:
+        codes = codebook.names
     gold_matrix = label_matrix(gold_labels, unit_ids, codes)
     pred_matrix = label_matrix(predicted, unit_ids, codes)
 
