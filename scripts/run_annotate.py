@@ -130,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.score:
         scored = [u for u in run.units["unit_id"] if u in workspace.gold_labels]
         if scored:
-            result = evaluate_run(run, workspace.gold_labels, workspace.codebook, workspace.adjudicated)
+            result = evaluate_run(run, workspace.gold_labels, workspace.codebook)
             print("\nagainst adjudicated gold:", file=sys.stderr)
             for key, value in result.overall.items():
                 print(f"  {key}: {value:.4f}" if isinstance(value, float) else f"  {key}: {value}", file=sys.stderr)

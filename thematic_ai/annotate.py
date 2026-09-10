@@ -1,4 +1,8 @@
-"""The annotation loop: prompt -> model -> validated, span-aligned rows.
+"""The annotation loop: prompt -> model -> validated rows.
+
+Coding is row-level: the unit of analysis is the whole justification, and the
+answer for a row is the set of codes that apply to it. No spans, offsets or
+quotes are produced.
 
 The output schema is fixed and backend-neutral. A GPT-5.1 run and a Qwen run
 produce byte-compatible CSVs that differ only in the `model` / `backend`
@@ -23,7 +27,6 @@ from .backends import BackendError, LLMBackend, get_backend
 from .codebook import Codebook
 from .config import RunConfig
 from .prompts import build_messages, build_schema
-from .spans import locate_quote
 
 LONG_COLUMNS = [
     "unit_id",
@@ -32,11 +35,6 @@ LONG_COLUMNS = [
     "unit_text",
     "theme",
     "code",
-    "scope",
-    "start_offset",
-    "end_offset",
-    "quote",
-    "quote_match",
     "confidence",
     "reason",
     "backend",
@@ -185,7 +183,6 @@ def _coerce_confidence(value: Any) -> float:
 
 def parse_model_answer(
     answer: dict[str, Any],
-    unit_text: str,
     codebook: Codebook,
     min_confidence: float = 0.0,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
@@ -224,37 +221,14 @@ def parse_model_answer(
             dropped.append({"reason": "below_min_confidence", "value": canonical})
             continue
 
-        quote = str(item.get("quote") or "").strip()
-        located = locate_quote(unit_text, quote) if quote else None
-        if located:
-            start, end, match_kind = located
-            rows.append(
-                {
-                    "theme": codebook.theme_of(canonical),
-                    "code": canonical,
-                    "scope": "span",
-                    "start_offset": start,
-                    "end_offset": end,
-                    "quote": unit_text[start:end],
-                    "quote_match": match_kind,
-                    "confidence": confidence,
-                    "reason": str(item.get("reason") or "").strip(),
-                }
-            )
-        else:
-            rows.append(
-                {
-                    "theme": codebook.theme_of(canonical),
-                    "code": canonical,
-                    "scope": "unit",
-                    "start_offset": pd.NA,
-                    "end_offset": pd.NA,
-                    "quote": "",
-                    "quote_match": "unmatched" if quote else "none",
-                    "confidence": confidence,
-                    "reason": str(item.get("reason") or "").strip(),
-                }
-            )
+        rows.append(
+            {
+                "theme": codebook.theme_of(canonical),
+                "code": canonical,
+                "confidence": confidence,
+                "reason": str(item.get("reason") or "").strip(),
+            }
+        )
         seen.add(canonical)
 
     note = str(answer.get("unit_note") or "").strip()
@@ -401,7 +375,7 @@ def _assemble(
         payload = results.get(unit_id, {"answer": {"codes": []}, "status": "missing", "error": "no result"})
 
         parsed, dropped, note = parse_model_answer(
-            payload.get("answer") or {}, text, codebook, config.min_confidence
+            payload.get("answer") or {}, codebook, config.min_confidence
         )
         for entry in dropped:
             all_dropped.append({"unit_id": unit_id, **entry})

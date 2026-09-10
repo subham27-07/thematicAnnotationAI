@@ -40,6 +40,10 @@ Participants reviewed a suspicious account, decided whether to suspend it, and \
 wrote a short free-text justification. Your job is to assign codes from a fixed \
 codebook to one such justification.
 
+Code at the level of the whole justification. Do not mark or quote individual \
+phrases: the unit of analysis is the justification, and the answer is the set \
+of codes that apply to it.
+
 Rules:
 1. Use ONLY the codes listed in the codebook below, spelled exactly as given. \
 Never invent, merge or rename a code.
@@ -47,23 +51,19 @@ Never invent, merge or rename a code.
 codes; some get none, and a few get four or more.
 3. Code what the participant actually wrote, not what you infer about the \
 account. If the participant does not say it, do not code it.
-4. A code is justified by evidence in the text. For each code, quote the \
-shortest span of the justification that supports it, copied verbatim, \
-character for character. If the code is supported by the justification as a \
-whole rather than one span, return an empty quote.
-5. Respect each code's "do not apply when" guidance, and prefer the most \
+4. Respect each code's "do not apply when" guidance, and prefer the most \
 specific code available over a general one.
-6. If the justification is too short or vague to support any code, return an \
+5. If the justification is too short or vague to support any code, return an \
 empty list of codes.
-7. Give each code a confidence between 0 and 1 reflecting how clearly the text \
-supports it.
+6. Give each code a confidence between 0 and 1 reflecting how clearly the text \
+supports it, and a short reason naming what in the justification supports it.
 
 Return JSON only, matching the required schema."""
 
 OUTPUT_CONTRACT = """\
 Respond with a JSON object shaped like:
-{"codes": [{"code": "<exact code name>", "quote": "<verbatim span or empty string>",
-            "confidence": 0.0, "reason": "<one short clause>"}],
+{"codes": [{"code": "<exact code name>", "confidence": 0.0,
+            "reason": "<one short clause>"}],
  "unit_note": "<one sentence on anything ambiguous, or empty>"}"""
 
 
@@ -79,14 +79,10 @@ def build_schema(codebook: Codebook) -> dict[str, Any]:
                     "type": "object",
                     "properties": {
                         "code": {"type": "string", "enum": codebook.names},
-                        "quote": {
-                            "type": "string",
-                            "description": "Verbatim span from the justification, or empty string.",
-                        },
                         "confidence": {"type": "number"},
                         "reason": {"type": "string"},
                     },
-                    "required": ["code", "quote", "confidence", "reason"],
+                    "required": ["code", "confidence", "reason"],
                     "additionalProperties": False,
                 },
             },
@@ -99,7 +95,6 @@ def build_schema(codebook: Codebook) -> dict[str, Any]:
 
 def select_few_shot_units(
     train_gold: pd.DataFrame,
-    adjudicated: pd.DataFrame,
     k: int,
     seed: int = 20260909,
 ) -> list[str]:
@@ -146,18 +141,9 @@ def select_few_shot_units(
     return chosen
 
 
-def render_few_shot(
-    unit_ids: Iterable[str],
-    gold: pd.DataFrame,
-    adjudicated: pd.DataFrame,
-) -> str:
+def render_few_shot(unit_ids: Iterable[str], gold: pd.DataFrame) -> str:
     """Format gold units as input/output demonstrations."""
     texts = gold.set_index("unit_id")["unit_text"].to_dict()
-    quotes: dict[tuple[str, str], str] = {}
-    for row in adjudicated.itertuples():
-        quote = "" if pd.isna(getattr(row, "quote", None)) else str(row.quote)
-        quotes.setdefault((row.unit_id, row.code), quote)
-
     label_sets = gold.set_index("unit_id")["gold_codes"].to_dict()
 
     blocks: list[str] = []
@@ -166,12 +152,7 @@ def render_few_shot(
             continue
         answer = {
             "codes": [
-                {
-                    "code": code,
-                    "quote": quotes.get((unit_id, code), ""),
-                    "confidence": 0.9,
-                    "reason": "",
-                }
+                {"code": code, "confidence": 0.9, "reason": ""}
                 for code in label_sets.get(unit_id, [])
             ],
             "unit_note": "",
@@ -185,7 +166,7 @@ def render_few_shot(
     return (
         "## WORKED EXAMPLES (human-coded and adjudicated)\n\n"
         + "\n\n".join(blocks)
-        + "\n\nFollow the same style: exact code names, verbatim quotes, no extra codes."
+        + "\n\nFollow the same style: exact code names, no extra codes."
     )
 
 
@@ -228,4 +209,15 @@ def build_messages(system_prompt: str, unit_text: str, context: str = "") -> lis
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": build_user_prompt(unit_text, context)},
+    ]
+
+
+def refine_messages(system_prompt: str, unit_text: str, context: str) -> list[dict[str, str]]:
+    body = (
+        f"{context}\n\nJUSTIFICATION:\n{unit_text}\n\n"
+        "Return the final adjudicated code set for this justification."
+    )
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": body},
     ]

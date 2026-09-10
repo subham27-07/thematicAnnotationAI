@@ -10,6 +10,7 @@ scale as the human-human reliability table.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -17,7 +18,6 @@ import pandas as pd
 
 from .codebook import Codebook
 from .data import label_matrix
-from .spans import span_iou
 
 
 def _safe_div(numerator: float, denominator: float) -> float:
@@ -123,57 +123,17 @@ def theme_level_metrics(
     return frame.rename(columns={"code": "theme"})
 
 
-def span_metrics(
-    pred_long: pd.DataFrame,
-    gold_long: pd.DataFrame,
-    iou_threshold: float = 0.5,
-) -> dict[str, float]:
-    """How well the model's quotes line up with the adjudicated spans.
-
-    Only (unit, code) pairs where both sides marked a span are comparable;
-    unit-scope codes carry no offsets on either side.
-    """
-    def _spans(frame: pd.DataFrame) -> dict[tuple[str, str], list[tuple[int, int]]]:
-        out: dict[tuple[str, str], list[tuple[int, int]]] = {}
-        for row in frame.itertuples():
-            start, end = getattr(row, "start_offset", None), getattr(row, "end_offset", None)
-            if pd.isna(start) or pd.isna(end):
-                continue
-            out.setdefault((row.unit_id, row.code), []).append((int(start), int(end)))
-        return out
-
-    gold_spans = _spans(gold_long)
-    pred_spans = _spans(pred_long)
-    shared = set(gold_spans) & set(pred_spans)
-    if not shared:
-        return {"n_span_pairs": 0, "mean_iou": float("nan"), "span_hit_rate": float("nan")}
-
-    ious = []
-    for key in shared:
-        best = max(
-            span_iou(p, g) for p in pred_spans[key] for g in gold_spans[key]
-        )
-        ious.append(best)
-    ious_array = np.array(ious)
-    return {
-        "n_span_pairs": len(shared),
-        "mean_iou": float(ious_array.mean()),
-        "span_hit_rate": float((ious_array >= iou_threshold).mean()),
-    }
-
-
 @dataclass
 class EvaluationResult:
     overall: dict[str, float]
     per_code: pd.DataFrame
     per_theme: pd.DataFrame
-    spans: dict[str, float]
     errors: pd.DataFrame
     gold_matrix: pd.DataFrame
     pred_matrix: pd.DataFrame
 
     def summary_row(self, **extra: Any) -> pd.Series:
-        return pd.Series({**extra, **self.overall, **{f"span_{k}": v for k, v in self.spans.items()}})
+        return pd.Series({**extra, **self.overall})
 
 
 def error_table(
@@ -206,7 +166,6 @@ def evaluate_run(
     run: Any,
     gold_labels: dict[str, set[str]],
     codebook: Codebook,
-    gold_long: pd.DataFrame | None = None,
     restrict_to_gold_codes: bool = False,
 ) -> EvaluationResult:
     """Score an `AnnotationRun` against gold label sets.
@@ -223,19 +182,11 @@ def evaluate_run(
     gold_matrix = label_matrix(gold_labels, unit_ids, codes)
     pred_matrix = label_matrix(predicted, unit_ids, codes)
 
-    pred_long = run.annotations[run.annotations["unit_id"].isin(unit_ids)]
-    spans = (
-        span_metrics(pred_long, gold_long[gold_long["unit_id"].isin(unit_ids)])
-        if gold_long is not None
-        else {"n_span_pairs": 0, "mean_iou": float("nan"), "span_hit_rate": float("nan")}
-    )
-
     texts = run.units.set_index("unit_id")["unit_text"].to_dict()
     return EvaluationResult(
         overall=overall_metrics(gold_matrix, pred_matrix),
         per_code=code_level_metrics(gold_matrix, pred_matrix),
         per_theme=theme_level_metrics(gold_matrix, pred_matrix, codebook),
-        spans=spans,
         errors=error_table(gold_matrix, pred_matrix, texts),
         gold_matrix=gold_matrix,
         pred_matrix=pred_matrix,
@@ -243,16 +194,19 @@ def evaluate_run(
 
 
 def human_baseline(
-    annotations: pd.DataFrame,
+    annotations: pd.DataFrame | None,
     codebook: Codebook,
     gold_labels: dict[str, set[str]],
     unit_ids: list[str] | None = None,
 ) -> pd.DataFrame:
     """Score each human coder against the adjudicated gold, as a ceiling.
 
-    A model's F1 is hard to read in the abstract; next to what a trained human
-    coder scored against the same adjudicated labels, it is interpretable.
+    Returns an empty frame when the per-coder annotations are not available,
+    since the pipeline's required inputs are the codebook and the adjudicated
+    file alone.
     """
+    if annotations is None or annotations.empty:
+        return pd.DataFrame()
     rows = []
     for coder, group in annotations.groupby("coder"):
         coder_labels = {u: set(g["code"]) for u, g in group.groupby("unit_id")}
@@ -293,7 +247,7 @@ def confidence_sweep(
 
 def agreement_with_each_coder(
     run: Any,
-    annotations: pd.DataFrame,
+    annotations: pd.DataFrame | None,
     codebook: Codebook,
     unit_ids: list[str] | None = None,
 ) -> pd.DataFrame:
@@ -304,6 +258,8 @@ def agreement_with_each_coder(
     person, and the per-coder numbers show how much of the score is specific to
     them.
     """
+    if annotations is None or annotations.empty:
+        return pd.DataFrame()
     predicted = run.label_sets
     rows = []
     for coder, group in annotations.groupby("coder"):
@@ -319,7 +275,7 @@ def agreement_with_each_coder(
 
 def ceiling_analysis(
     per_code: pd.DataFrame,
-    reliability_path: str,
+    reliability: str | Path | pd.DataFrame,
     round_number: int = 1,
     min_support: int = 3,
     agreement_floor: float = 0.6,
@@ -332,7 +288,7 @@ def ceiling_analysis(
     they did not, the remaining error is the codebook's inconsistency rather
     than the model's comprehension, and better prompting will not move it.
     """
-    merged = compare_to_human_reliability(per_code, reliability_path, round_number)
+    merged = compare_to_human_reliability(per_code, reliability, round_number)
     merged = merged[merged["support_gold"] >= min_support].dropna(subset=["human_human_kappa"])
     agreed = merged[merged["human_human_kappa"] >= agreement_floor]
     disputed = merged[merged["human_human_kappa"] < disagreement_ceiling]
@@ -349,17 +305,92 @@ def ceiling_analysis(
     }
 
 
-def compare_to_human_reliability(
-    per_code: pd.DataFrame, reliability_path: str, round_number: int = 1
+def human_reliability(
+    annotations: pd.DataFrame,
+    codebook: Codebook,
+    coverage: dict[str, set[str]] | None = None,
 ) -> pd.DataFrame:
-    """Put model-vs-gold kappa beside the human-human kappa for each code."""
-    reliability = pd.read_csv(reliability_path)
-    reliability = reliability[reliability["round_number"] == round_number]
-    reliability["cohens_kappa"] = pd.to_numeric(
-        reliability["cohens_kappa"].astype(str).str.lstrip("'"), errors="coerce"
-    )
+    """Per-code Cohen's kappa between the two coders on doubly-coded units.
+
+    Computed from the per-coder annotations rather than read from a
+    pre-exported reliability table, so it stays in step with the data. Scored
+    over the units both coders finished: a code absent from one coder's rows
+    for such a unit is a genuine negative, not a missing observation.
+    """
+    coders = sorted(annotations["coder"].dropna().unique())
+    if len(coders) != 2:
+        return pd.DataFrame()
+
+    if coverage:
+        shared = coverage.get(coders[0], set()) & coverage.get(coders[1], set())
+    else:
+        shared = set.intersection(
+            *(set(g["unit_id"]) for _, g in annotations.groupby("coder"))
+        )
+    units = sorted(shared)
+    if not units:
+        return pd.DataFrame()
+
+    matrices = [
+        label_matrix(
+            annotations[annotations["coder"] == coder]
+            .groupby("unit_id")["code"]
+            .apply(set)
+            .to_dict(),
+            units,
+            codebook.names,
+        )
+        for coder in coders
+    ]
+
+    rows = []
+    for code in codebook.names:
+        a = matrices[0][code].to_numpy()
+        b = matrices[1][code].to_numpy()
+        rows.append(
+            {
+                "code": code,
+                "n_units": len(units),
+                "n_coder_a": int(a.sum()),
+                "n_coder_b": int(b.sum()),
+                "percent_agreement": float((a == b).mean()),
+                "cohens_kappa": _cohen_kappa(a, b),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def compare_to_human_reliability(
+    per_code: pd.DataFrame,
+    reliability: str | Path | pd.DataFrame,
+    round_number: int = 1,
+) -> pd.DataFrame:
+    """Put model-vs-gold kappa beside the human-human kappa for each code.
+
+    Accepts either a reliability table computed by `human_reliability` or a
+    path to the tool's reliability export. When neither is available the
+    model's own kappa is returned unchanged, with the comparison columns empty.
+    """
+    if isinstance(reliability, pd.DataFrame):
+        table = reliability.copy()
+    elif Path(reliability).exists():
+        table = pd.read_csv(reliability)
+        table = table[table["round_number"] == round_number]
+        table["cohens_kappa"] = pd.to_numeric(
+            table["cohens_kappa"].astype(str).str.lstrip("'"), errors="coerce"
+        )
+    else:
+        table = None
+
+    if table is None or table.empty:
+        out = per_code.copy()
+        out["human_human_kappa"] = np.nan
+        out["human_human_agreement"] = np.nan
+        out["kappa_gap"] = np.nan
+        return out
+
     merged = per_code.merge(
-        reliability[["code", "cohens_kappa", "percent_agreement"]].rename(
+        table[["code", "cohens_kappa", "percent_agreement"]].rename(
             columns={"cohens_kappa": "human_human_kappa", "percent_agreement": "human_human_agreement"}
         ),
         on="code",

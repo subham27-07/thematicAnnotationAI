@@ -56,8 +56,80 @@ def load_units(path: str | Path, text_column: str = "justification") -> pd.DataF
     return frame[keep].reset_index(drop=True)
 
 
-def load_human_annotations(path: str | Path, codebook: Codebook | None = None) -> pd.DataFrame:
-    """Per-coder annotations in long format (one row per unit x code x span)."""
+def annotations_from_export(path: str | Path) -> pd.DataFrame | None:
+    """Rebuild the per-coder long frame from the project JSON export.
+
+    The tool's CSV exports are optional inputs, but the same per-coder rows are
+    carried inside `project-export.json`, so the human comparisons stay
+    available from the export alone.
+    """
+    export = Path(path)
+    if not export.exists():
+        return None
+    payload = json.loads(export.read_text())
+    if not payload.get("annotations"):
+        return None
+
+    coders = {c["id"]: c["name"] for c in payload.get("coders", [])}
+    codes = {c["id"]: c["name"] for c in payload.get("codes", [])}
+    themes = {t["id"]: t["name"] for t in payload.get("themes", [])}
+    theme_of_code = {
+        c["id"]: themes.get(c.get("theme_id"), "") for c in payload.get("codes", [])
+    }
+    units = {u["id"]: u for u in payload.get("units", [])}
+    rounds = {r["id"]: r.get("number") for r in payload.get("rounds", [])}
+
+    rows = []
+    for a in payload["annotations"]:
+        unit = units.get(a["unit_id"], {})
+        rows.append(
+            {
+                "round_number": rounds.get(a.get("round_id")),
+                "unit_id": unit.get("external_id", a["unit_id"]),
+                "unit_text": unit.get("text", ""),
+                "coder": coders.get(a["coder_id"], a["coder_id"]),
+                "theme": theme_of_code.get(a["code_id"], ""),
+                "code": codes.get(a["code_id"], ""),
+            }
+        )
+    frame = pd.DataFrame(rows)
+    return frame.drop_duplicates(subset=["coder", "unit_id", "code"]).reset_index(drop=True)
+
+
+def coder_coverage(path: str | Path) -> dict[str, set[str]]:
+    """Units each coder finished, from the export's progress table.
+
+    Needed to tell "this coder did not apply the code" apart from "this coder
+    never saw the unit" when computing human-human agreement.
+    """
+    export = Path(path)
+    if not export.exists():
+        return {}
+    payload = json.loads(export.read_text())
+    coders = {c["id"]: c["name"] for c in payload.get("coders", [])}
+    units = {u["id"]: u.get("external_id", u["id"]) for u in payload.get("units", [])}
+
+    out: dict[str, set[str]] = {}
+    for row in payload.get("unit_progress", []):
+        if str(row.get("status", "")).lower() not in {"done", "complete", "completed"}:
+            continue
+        name = coders.get(row["coder_id"], row["coder_id"])
+        out.setdefault(name, set()).add(units.get(row["unit_id"], row["unit_id"]))
+    return out
+
+
+def load_human_annotations(
+    path: str | Path, codebook: Codebook | None = None
+) -> pd.DataFrame | None:
+    """Per-coder annotations, from the CSV export or the project JSON.
+
+    Optional: the pipeline runs off the codebook and the adjudicated file. This
+    only feeds the human-coder baseline, which is skipped when neither source
+    is present.
+    """
+    path = Path(path)
+    if not path.exists():
+        return None
     frame = pd.read_csv(path)
     frame["code"] = frame["code"].astype(str).str.strip()
     if codebook is not None:
@@ -70,7 +142,12 @@ def load_human_annotations(path: str | Path, codebook: Codebook | None = None) -
 
 
 def load_adjudicated(path: str | Path, codebook: Codebook | None = None) -> pd.DataFrame:
-    """Adjudicated (gold) annotations in long format."""
+    """Adjudicated (gold) annotations, one row per unit x code.
+
+    The export carries one row per highlighted span, so a code applied to two
+    phrases of the same justification appears twice. Coding here is row-level,
+    so those are collapsed to a single (unit, code) pair.
+    """
     frame = pd.read_csv(path)
     if "adjudication_status" in frame.columns:
         frame = frame[frame["adjudication_status"].astype(str).str.lower() == "resolved"]
@@ -82,6 +159,9 @@ def load_adjudicated(path: str | Path, codebook: Codebook | None = None) -> pd.D
         if len(unknown):
             raise ValueError(f"adjudicated file references unknown codes: {list(unknown)}")
         frame["code"] = resolved
+
+    span_columns = [c for c in ("scope", "start_offset", "end_offset", "quote") if c in frame.columns]
+    frame = frame.drop(columns=span_columns).drop_duplicates(subset=["unit_id", "code"])
     return frame.reset_index(drop=True)
 
 

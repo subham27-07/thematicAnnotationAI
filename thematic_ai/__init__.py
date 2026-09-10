@@ -12,9 +12,11 @@ from .data import load_units, load_human_annotations, load_adjudicated
 from .backends import get_backend, LLMBackend
 from .prompts import build_messages, build_system_prompt, PromptVariant
 from .annotate import annotate_units, AnnotationRun
+from .refine import refine_run
 from .evaluate import (
     evaluate_run,
     human_baseline,
+    human_reliability,
     agreement_with_each_coder,
     compare_to_human_reliability,
     confidence_sweep,
@@ -35,9 +37,11 @@ __all__ = [
     "build_system_prompt",
     "PromptVariant",
     "annotate_units",
+    "refine_run",
     "AnnotationRun",
     "evaluate_run",
     "human_baseline",
+    "human_reliability",
     "agreement_with_each_coder",
     "compare_to_human_reliability",
     "confidence_sweep",

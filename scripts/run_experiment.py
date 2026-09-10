@@ -72,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     summaries: list[pd.Series] = []
 
     baseline = human_baseline(workspace.annotations, workspace.codebook, workspace.gold_labels, test_ids)
-    for _, row in baseline.iterrows():
+    for _, row in baseline.iterrows():  # empty unless the per-coder export is present
         summaries.append(row)
         print(
             f"\nhuman {row['annotator']}: micro-F1 {row['micro_f1']:.3f} "
@@ -116,21 +116,25 @@ def main(argv: list[str] | None = None) -> int:
         run.save(output_dir, prefix="eval")
         elapsed = time.perf_counter() - started
 
-        result = evaluate_run(run, workspace.gold_labels, workspace.codebook, workspace.adjudicated)
+        result = evaluate_run(run, workspace.gold_labels, workspace.codebook)
         tag = f"{config.backend}__{config.model_slug}__{variant}"
         result.per_code.to_csv(eval_dir / f"per_code__{tag}.csv", index=False)
         result.per_theme.to_csv(eval_dir / f"per_theme__{tag}.csv", index=False)
         result.errors.to_csv(eval_dir / f"errors__{tag}.csv", index=False)
-        compare_to_human_reliability(
-            result.per_code, str(workspace.config.codebook_path.parent / "reliability-all-rounds.csv")
-        ).to_csv(eval_dir / f"vs_human_reliability__{tag}.csv", index=False)
-        agreement_with_each_coder(
-            run, workspace.annotations, workspace.codebook, test_ids
-        ).to_csv(eval_dir / f"vs_each_coder__{tag}.csv", index=False)
 
-        reliability_path = str(workspace.config.codebook_path.parent / "reliability-all-rounds.csv")
-        ceiling = ceiling_analysis(result.per_code, reliability_path)
-        ceiling.pop("detail").to_csv(eval_dir / f"ceiling__{tag}.csv", index=False)
+        # The human comparisons need the per-coder rows, which come from the
+        # CSV export or from project-export.json. Skipped when neither exists.
+        if workspace.reliability is not None and not workspace.reliability.empty:
+            compare_to_human_reliability(result.per_code, workspace.reliability).to_csv(
+                eval_dir / f"vs_human_reliability__{tag}.csv", index=False
+            )
+            ceiling = ceiling_analysis(result.per_code, workspace.reliability)
+            ceiling.pop("detail").to_csv(eval_dir / f"ceiling__{tag}.csv", index=False)
+        else:
+            ceiling = None
+        per_coder = agreement_with_each_coder(run, workspace.annotations, workspace.codebook, test_ids)
+        if not per_coder.empty:
+            per_coder.to_csv(eval_dir / f"vs_each_coder__{tag}.csv", index=False)
 
         sweep = confidence_sweep(run, workspace.gold_labels, workspace.codebook)
         sweep.to_csv(eval_dir / f"confidence_sweep__{tag}.csv", index=False)
@@ -151,12 +155,13 @@ def main(argv: list[str] | None = None) -> int:
             f"| exact-set {result.overall['exact_set_match']:.3f} | kappa {result.overall['macro_kappa_present_codes']:.3f}",
             file=sys.stderr,
         )
-        print(
-            f"  on codes the two humans agreed about (kappa>=0.6, n={ceiling['n_codes_humans_agreed']}): "
-            f"F1 {ceiling['f1_where_humans_agreed']:.3f}; on codes they did not "
-            f"(kappa<0.35, n={ceiling['n_codes_humans_disagreed']}): F1 {ceiling['f1_where_humans_disagreed']:.3f}",
-            file=sys.stderr,
-        )
+        if ceiling:
+            print(
+                f"  on codes the two humans agreed about (kappa>=0.6, n={ceiling['n_codes_humans_agreed']}): "
+                f"F1 {ceiling['f1_where_humans_agreed']:.3f}; on codes they did not "
+                f"(kappa<0.35, n={ceiling['n_codes_humans_disagreed']}): F1 {ceiling['f1_where_humans_disagreed']:.3f}",
+                file=sys.stderr,
+            )
         if best["min_confidence"] > 0:
             print(
                 f"  discarding codes below confidence {best['min_confidence']:.2f} would give "
